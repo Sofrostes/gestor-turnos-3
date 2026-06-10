@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+from datetime import datetime
 
 st.set_page_config(page_title="Cuadrantes Metrovalencia", layout="wide")
 
 st.title("📅 Cuadrante de Servicios - Metrovalencia")
-st.caption("Vista calendario | Días pares azul / impares amarillo | Carga exacta por rangos")
+st.caption("Vista calendario | Días pares azul / impares amarillo")
 
 # ============================================================
 # GESTOR BD
@@ -55,16 +56,17 @@ class GestorDB:
         conn.close()
         return agente_id
     
-    def guardar_turno(self, agente_id, dia, turno):
-        if turno and turno not in ["0", "0.0", ""]:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT OR REPLACE INTO turnos (agente_id, dia, turno) VALUES (?, ?, ?)",
-                (agente_id, dia, turno)
-            )
-            conn.commit()
-            conn.close()
+    def guardar_turnos(self, agente_id, turnos):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        for dia, turno in enumerate(turnos, 1):
+            if turno and turno not in ["0", "0.0", ""]:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO turnos (agente_id, dia, turno) VALUES (?, ?, ?)",
+                    (agente_id, dia, turno)
+                )
+        conn.commit()
+        conn.close()
     
     def get_agentes(self):
         conn = sqlite3.connect(self.db_path)
@@ -89,25 +91,31 @@ class GestorDB:
         conn.close()
         return result[0] if result else ""
     
-    def actualizar_turno(self, agente_id, dia, turno):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        if turno and turno not in ["0", "0.0", ""]:
-            cursor.execute(
-                "INSERT OR REPLACE INTO turnos (agente_id, dia, turno) VALUES (?, ?, ?)",
-                (agente_id, dia, turno)
-            )
-        else:
-            cursor.execute("DELETE FROM turnos WHERE agente_id = ? AND dia = ?", (agente_id, dia))
-        conn.commit()
-        conn.close()
-    
     def intercambiar_turnos(self, agente1_id, agente2_id, dia):
         t1 = self.get_turno(agente1_id, dia)
         t2 = self.get_turno(agente2_id, dia)
-        self.actualizar_turno(agente1_id, dia, t2)
-        self.actualizar_turno(agente2_id, dia, t1)
-        return True
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        if t2:
+            cursor.execute(
+                "INSERT OR REPLACE INTO turnos (agente_id, dia, turno) VALUES (?, ?, ?)",
+                (agente1_id, dia, t2)
+            )
+        else:
+            cursor.execute("DELETE FROM turnos WHERE agente_id = ? AND dia = ?", (agente1_id, dia))
+        
+        if t1:
+            cursor.execute(
+                "INSERT OR REPLACE INTO turnos (agente_id, dia, turno) VALUES (?, ?, ?)",
+                (agente2_id, dia, t1)
+            )
+        else:
+            cursor.execute("DELETE FROM turnos WHERE agente_id = ? AND dia = ?", (agente2_id, dia))
+        
+        conn.commit()
+        conn.close()
+        return t1, t2
 
 
 # ============================================================
@@ -189,7 +197,7 @@ def mostrar_calendario(turnos):
     # Cabecera
     html += '<tr>'
     for dia in dias_semana:
-        html += f'<th style="background-color:#334155; color:white; padding:6px; border:1px solid #475569; font-size:0.8rem;">{dia}</th>'
+        html += f'<th style="background-color:#1e293b; color:white; padding:8px; border:1px solid #475569; font-size:0.75rem;">{dia}</th>'
     html += '</tr>'
     
     # Calendario (5 semanas)
@@ -201,13 +209,13 @@ def mostrar_calendario(turnos):
                 turno = turnos[dia_num - 1] if turnos[dia_num - 1] else "—"
                 bg_color = "#DBEAFE" if dia_num % 2 == 0 else "#FEF3C7"
                 html += f'''
-                <td style="background-color:{bg_color}; padding:6px; border:1px solid #cbd5e1;">
+                <td style="background-color:{bg_color}; padding:8px 4px; border:1px solid #cbd5e1;">
                     <div style="font-weight:bold; font-size:0.7rem;">{dia_num}</div>
-                    <div style="font-size:0.8rem;">{turno}</div>
+                    <div style="font-size:0.75rem; font-weight:500;">{turno}</div>
                 </td>
                 '''
             else:
-                html += '<td style="background-color:#f1f5f9; border:1px solid #cbd5e1;"></td>'
+                html += '<td style="background-color:#f1f5f9; border:1px solid #cbd5e1;">&nbsp;</td>'
         html += '</tr>'
     
     html += '</table>'
@@ -222,6 +230,8 @@ if 'db' not in st.session_state:
     st.session_state.db = GestorDB()
 if 'datos_cargados' not in st.session_state:
     st.session_state.datos_cargados = False
+if 'mensaje' not in st.session_state:
+    st.session_state.mensaje = None
 
 
 with st.sidebar:
@@ -231,7 +241,7 @@ with st.sidebar:
     
     if archivo:
         if st.button("📥 CARGAR AGENTES", type="primary", use_container_width=True):
-            with st.spinner("Cargando..."):
+            with st.spinner("Cargando agentes..."):
                 with open("temp.xlsx", "wb") as f:
                     f.write(archivo.getbuffer())
                 
@@ -245,14 +255,10 @@ with st.sidebar:
                 for zona, agentes in agentes_por_zona.items():
                     for ag in agentes:
                         agente_id = st.session_state.db.guardar_agente(ag["codigo"], ag["nombre"], zona)
-                        for dia, turno in enumerate(ag["turnos"], 1):
-                            if turno:
-                                st.session_state.db.guardar_turno(agente_id, dia, turno)
+                        st.session_state.db.guardar_turnos(agente_id, ag["turnos"])
                 
                 st.session_state.datos_cargados = True
-                st.success(f"✅ Cargados {total} agentes")
-                for zona, agentes in agentes_por_zona.items():
-                    st.write(f"   - {zona}: {len(agentes)} agentes")
+                st.session_state.mensaje = f"✅ Cargados {total} agentes"
                 st.rerun()
             else:
                 st.error("No se encontraron agentes")
@@ -266,10 +272,19 @@ with st.sidebar:
         st.metric("Total agentes", len(df_agentes))
 
 
+# Mostrar mensaje si existe
+if st.session_state.mensaje:
+    if "✅" in st.session_state.mensaje:
+        st.success(st.session_state.mensaje)
+    else:
+        st.info(st.session_state.mensaje)
+    st.session_state.mensaje = None
+
+
 if not st.session_state.datos_cargados:
     st.info("👈 **Carga el archivo Excel y haz clic en CARGAR AGENTES**")
     
-    with st.expander("📖 Rangos configurados"):
+    with st.expander("📖 Configuración"):
         st.markdown("""
         | Zona | Filas |
         |------|-------|
@@ -294,7 +309,7 @@ else:
     st.markdown(f"## 📊 {zona_sel}")
     st.caption(f"{len(df_agentes)} agentes | 🔵 Azul = días pares | 🟡 Amarillo = días impares")
     
-    # Grid de 2 columnas
+    # Grid de 2 columnas para los calendarios
     cols = st.columns(2)
     for idx, (_, agente) in enumerate(df_agentes.iterrows()):
         with cols[idx % 2]:
@@ -314,27 +329,34 @@ else:
             ag1 = st.selectbox("Agente 1", nombres, key="ag1")
             idx1 = nombres.index(ag1)
             ag1_id = df_agentes.iloc[idx1]["id"]
+            ag1_nombre = df_agentes.iloc[idx1]["nombre"]
         
         with col2:
             ag2 = st.selectbox("Agente 2", nombres, key="ag2")
             idx2 = nombres.index(ag2)
             ag2_id = df_agentes.iloc[idx2]["id"]
+            ag2_nombre = df_agentes.iloc[idx2]["nombre"]
         
         with col3:
             dia = st.selectbox("Día", list(range(1, 32)), key="dia")
         
+        # Obtener turnos actuales
         turno1 = st.session_state.db.get_turno(ag1_id, dia)
         turno2 = st.session_state.db.get_turno(ag2_id, dia)
         
-        st.info(f"📌 **Actual:** {ag1} → `{turno1 if turno1 else '—'}` | {ag2} → `{turno2 if turno2 else '—'}`")
+        st.info(f"📌 **Turno actual del día {dia}:**")
+        st.info(f"   • {ag1_nombre} → `{turno1 if turno1 else '—'}`")
+        st.info(f"   • {ag2_nombre} → `{turno2 if turno2 else '—'}`")
         
-        if st.button("🔄 Intercambiar turnos", type="primary", use_container_width=True):
-            st.session_state.db.intercambiar_turnos(ag1_id, ag2_id, dia)
-            st.success("✅ Turnos intercambiados")
+        if st.button("🔄 INTERCAMBIAR TURNOS", type="primary", use_container_width=True):
+            t1, t2 = st.session_state.db.intercambiar_turnos(ag1_id, ag2_id, dia)
+            st.balloons()
+            st.session_state.mensaje = f"✅ Turnos intercambiados correctamente: {ag1_nombre} ↔ {ag2_nombre} (Día {dia})"
             st.rerun()
     else:
-        st.warning("Se necesitan al menos 2 agentes")
+        st.warning("Se necesitan al menos 2 agentes para intercambiar turnos")
     
-    if st.button("🔄 Recargar archivo", use_container_width=True):
+    # Botón para recargar
+    if st.button("🔄 Recargar / Cambiar archivo", use_container_width=True):
         st.session_state.datos_cargados = False
         st.rerun()
